@@ -41,3 +41,7 @@ Print files that usually get edited together with this file in the same commit.
     ================================================================================
     100.00  Cargo.toml
     100.00  Cargo.lock
+
+# Installation
+
+    cargo install --path .
