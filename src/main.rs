@@ -95,7 +95,6 @@ struct ColabNetDatabase {
 }
 
 impl ColabNetDatabase {
-
     pub fn find_file(&self, fname: &str) -> Option<u32> {
         if let Ok(res) = self.files.binary_search(&fname.to_string()) {
             Some(res as u32)
@@ -103,7 +102,6 @@ impl ColabNetDatabase {
             None
         }
     }
-
     pub fn find_author(&self, author: &str) -> Option<u32> {
         if let Ok(res) = self.authors.binary_search(&author.to_string()) {
             Some(res as u32)
@@ -111,7 +109,6 @@ impl ColabNetDatabase {
             None
         }
     }
-
     pub fn get_author(&self, idx: u32) -> Option<&str> {
         if (idx as usize) < self.authors.len() {
             Some(&self.authors[idx as usize])
@@ -119,7 +116,6 @@ impl ColabNetDatabase {
             None
         }
     }
-
     pub fn get_file(&self, idx: u32) -> Option<&str> {
         if (idx as usize) < self.files.len() {
             Some(&self.files[idx as usize])
@@ -127,8 +123,6 @@ impl ColabNetDatabase {
             None
         }
     }
-
-
     pub fn authors_of_file(&self, fname: &str) -> Option<Vec<(&str, u32)>> {
         self.find_file(fname)
             .map(|file_idx| {
@@ -139,7 +133,6 @@ impl ColabNetDatabase {
                     .collect()
             })
     }
-
     pub fn files_correlated(&self, fname: &str) -> Option<Vec<(&str, u32)>> {
         if let Some(fileno) = self.find_file(fname) {
             if let Some(otherfiles) = self.files_to_files.get(&fileno) {
@@ -153,8 +146,7 @@ impl ColabNetDatabase {
 
         None
     }
-
-    pub fn from_disk() -> Result<Self, std::io::Error> {
+    pub fn from_disk(load_file_to_file: bool) -> Result<Self, std::io::Error> {
         use std::io::BufRead;
 
         let file = std::fs::File::open(".colabnet")?;
@@ -193,6 +185,9 @@ impl ColabNetDatabase {
                     .or_insert(0);
                 *changes = changesno as u32;
             } else if mode == 3 {
+                if !load_file_to_file {
+                    break;
+                }
                 let nums: Vec<_> = line.split_ascii_whitespace().collect();
 
                 if nums.len() == 3 {
@@ -219,60 +214,6 @@ impl ColabNetDatabase {
 
         Ok(ColabNetDatabase { files, authors, files_to_authors, files_to_files })
     }
-}
-
-fn load_state() 
-    -> Result<(BTreeMap<FileName, BTreeMap<Author, Changes>>, BTreeSet<Author>), 
-        std::io::Error> {
-    use std::io::BufRead;
-
-    let file = std::fs::File::open(".colabnet")?;
-    let fin = std::io::BufReader::new(file);
-
-    let mut mode = 0; // 0 - authors, 1 - files, 2 - mappings, 3 - 
-    let mut nr = 0;
-    let mut authors = BTreeSet::<Author>::new();
-    let mut idx_to_authors = BTreeMap::<usize, Author>::new();
-    let mut idx_to_files = BTreeMap::<usize, Author>::new();
-    // TODO: store state like it is stored on disk, with numeric mappings for fastest operation
-    let mut files: BTreeMap<FileName, BTreeMap<Author, Changes>> = BTreeMap::new();
-
-    for line in fin.lines().filter_map(|l| l.ok()) {
-
-        if line == "" {
-            nr = 0;
-            mode += 1;
-        }
-
-        if mode == 0 {
-            authors.insert(line.trim().to_string());
-            idx_to_authors.insert(nr, line.trim().to_string());
-            nr += 1;
-        } else if mode == 1 {
-            idx_to_files.insert(nr, line.trim().to_string());
-            nr += 1;
-        } else if mode == 2 {
-            let nums: Vec<_> = line.split_whitespace().collect();
-
-            if nums.len() == 0 {
-                continue;
-            }
-
-            let fileno = nums[0].parse::<usize>().expect("failed to parse num");
-            let authorno = nums[1].parse::<usize>().expect("failed to parse num");
-            let changesno = nums[2].parse::<usize>().expect("failed to parse num");
-            let f = files.entry(idx_to_files.get(&fileno).unwrap().clone())
-                .or_insert(BTreeMap::new());
-
-            let changes = f.entry(idx_to_authors.get(&authorno).unwrap().clone())
-                .or_insert(0);
-            *changes = changesno as i32;
-        } else {
-            break;
-        }
-    }
-
-    Ok((files, authors))
 }
 
 #[test]
@@ -305,7 +246,7 @@ fn main() -> Result<(), std::io::Error> {
 
     if sargs[1] == "owners" {
         let now = std::time::Instant::now();
-        let database = ColabNetDatabase::from_disk()?;
+        let database = ColabNetDatabase::from_disk(false)?;
         eprintln!("load_state new {:?}", now.elapsed());
         
         if let Some(mut authors) = database.authors_of_file(&sargs[2]) {
@@ -315,14 +256,14 @@ fn main() -> Result<(), std::io::Error> {
             writeln!(stdout, "CHANGES\tAUTHOR")?;
             writeln!(stdout, "=======================")?;
             for r in authors.iter().rev() {
-                writeln!(stdout, "{}\t{}", r.1, r.0);
+                writeln!(stdout, "{}\t{}", r.1, r.0)?;
             }
         }
 
         return Ok(());
     } else if sargs[1] == "cousins" {
         let now = std::time::Instant::now();
-        let database = ColabNetDatabase::from_disk()?;
+        let database = ColabNetDatabase::from_disk(true)?;
         eprintln!("load_state new {:?}", now.elapsed());
         
         if let Some(mut res) = database.files_correlated(&sargs[2]) {
@@ -333,10 +274,11 @@ fn main() -> Result<(), std::io::Error> {
             let total_changes = res[res.len()-1].1 as f64;
 
             let mut stdout = std::io::stdout().lock();
-            writeln!(stdout, "%\tFILE");
-            writeln!(stdout, "=======================");
+            writeln!(stdout, "TOTAL CHANGES: {total_changes}")?;
+            writeln!(stdout, "%\tFILE")?;
+            writeln!(stdout, "=======================")?;
             for r in res.iter().rev() {
-                writeln!(stdout, "{:>6.2}\t{}", 100.0 * r.1 as f64 / total_changes, r.0);
+                writeln!(stdout, "{:>6.2}\t{}", 100.0 * r.1 as f64 / total_changes, r.0)?;
             }
         }
         return Ok(());
