@@ -1,9 +1,41 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::process::Command;
+use std::path::{Path, PathBuf};
 
 type FileName = String;
 type Author = String;
 type Changes = i32;
+
+fn relative_to_repo(file: &Path) -> Result<PathBuf, String> {
+    let cd = std::env::current_dir()
+        .map_err(|s| format!("{}", s))?;
+    let git = find_git_folder(&cd)
+        .map_err(|s| format!("{}", s))?;
+
+    let git = git.canonicalize()
+        .map_err(|s| format!("{}", s))?;
+    let file = file.canonicalize()
+        .map_err(|s| format!("{}", s))?;
+
+    file.strip_prefix(git)
+        .map_err(|s| format!("{}", s))
+        .map(|p| p.to_owned())
+}
+
+fn find_git_folder(path: &Path) -> Result<&Path, std::io::Error> {
+   let git = path.join(".git");
+
+   if git.exists() {
+       Ok(path)
+   } else {
+       if let Some(parent) = path.parent() {
+           find_git_folder(parent)
+       } else {
+           Err(std::io::Error::new(std::io::ErrorKind::NotFound,
+                   "Could not find git repository in this folder or its parents."))
+       }
+   }
+}
 
 fn save_state(
     files: &BTreeMap<FileName, BTreeMap<Author, Changes>>, 
@@ -115,9 +147,12 @@ impl ColabNetDatabase {
         None
     }
     pub fn from_disk(load_file_to_file: bool) -> Result<Self, std::io::Error> {
+        let cd = std::env::current_dir()?;
+        let git = find_git_folder(&cd)?;
+        let dbfile = git.join(Path::new(".colabnet"));
         use std::io::BufRead;
 
-        let file = std::fs::File::open(".colabnet")?;
+        let file = std::fs::File::open(dbfile)?;
         let fin = std::io::BufReader::new(file);
 
         let mut mode = 0; // 0 - authors, 1 - files, 2 - mappings, 3 - file2file
@@ -233,16 +268,17 @@ enum CnCommand {
     }
 }
 
-fn main() -> Result<(), std::io::Error> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
     use std::io::Write;
 
     match cli.command {
         CnCommand::Owners{ filename } => {
+            let filename = relative_to_repo(Path::new(&filename))?;
             let database = ColabNetDatabase::from_disk(false)?;
 
-            if let Some(mut authors) = database.authors_of_file(&filename) {
+            if let Some(mut authors) = database.authors_of_file(&filename.to_string_lossy()) {
                 authors.sort_by_key(|(_a, ch)| *ch);
 
                 let mut stdout = std::io::stdout().lock();
@@ -256,9 +292,11 @@ fn main() -> Result<(), std::io::Error> {
             return Ok(());
         },
         CnCommand::Cousins { filename } => {
+            let filename = relative_to_repo(Path::new(&filename))?;
+
             let database = ColabNetDatabase::from_disk(true)?;
 
-            if let Some(mut res) = database.files_correlated(&filename) {
+            if let Some(mut res) = database.files_correlated(&filename.to_string_lossy()) {
                 if res.is_empty() {
                     return Ok(());
                 }
